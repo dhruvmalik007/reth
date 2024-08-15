@@ -8,10 +8,13 @@ use reth_primitives::{
     revm_primitives::{
         BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ExecutionResult, HaltReason,
         ResultAndState, TransactTo, TxEnv,
-    },
-    transaction::AccessListResult,
-    Bytes, TransactionSignedEcRecovered, TxKind, B256, U256,
+    }, transaction::AccessListResult, Bytes, Header, TransactionSignedEcRecovered, TxKind, B256, U256
 };
+
+use tokio::time::timeout;
+
+use reth_provider::HeaderProvider;
+
 use reth_provider::{ChainSpecProvider, StateProvider};
 use reth_revm::{database::StateProviderDatabase, db::CacheDB, DatabaseRef};
 use reth_rpc_eth_types::{
@@ -27,12 +30,11 @@ use reth_rpc_server_types::constants::gas_oracle::{
     CALL_STIPEND_GAS, ESTIMATE_GAS_ERROR_RATIO, MIN_TRANSACTION_GAS,
 };
 use reth_rpc_types::{
-    simulate::{SimBlock, SimulatedBlock},
-    state::{EvmOverrides, StateOverride},
-    BlockId, Bundle, EthCallResponse, StateContext, TransactionInfo, TransactionRequest,
+    simulate::{SimBlock, SimulatePayload, SimulatedBlock}, state::{EvmOverrides, StateOverride}, Block, BlockId, BlockOverrides, Bundle, EthCallResponse, StateContext, TransactionInfo, TransactionInput, TransactionRequest
 };
 use revm::{Database, DatabaseCommit};
 use revm_inspectors::access_list::AccessListInspector;
+use revm_primitives::{bitvec::ptr::null, Address};
 use tracing::trace;
 
 use super::{LoadBlock, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace};
@@ -51,15 +53,78 @@ pub trait EthCall: Call + LoadPendingBlock {
     }
 
     /// `eth_simulateV1` executes an arbitrary number of transactions on top of the requested state.
-    /// The transactions are packed into individual blocks. Overrides can be provided.
-    ///
+    /// The transactions are packed into individual blocks.
     /// See also: <https://github.com/ethereum/go-ethereum/pull/27720>
     fn simulate_v1(
         &self,
         _opts: SimBlock,
         _block_number: Option<BlockId>,
+        trace_transfer_flag: Option<bool> // for getting transfer logs
     ) -> impl Future<Output = Result<Vec<SimulatedBlock>, Self::Error>> + Send {
-        async move { Err(EthApiError::Unsupported("eth_simulateV1 is not supported.").into()) }
+        //fetching the parameters from the core opts file.
+        async move {
+        let SimBlock{ block_overrides, state_overrides, calls} = _opts;
+
+        if calls.is_empty() {
+            let sum_defined_gas_param: i64 = 0 ;
+            for txn_call in calls {
+                txn_call = TransactionRequest{                    
+                    from: Option(Address("0x0000000000000000000000000000000000000000")),
+                    transaction_type: "0x2",
+                    to: null(),
+                    gas_price: Option("0x0"),
+                    max_fee_per_gas: Option("0x0"),
+                    access_list: [0;],
+                    max_priority_fee_per_gas: Option("0x0"),
+                    max_fee_per_blob_gas: Option("0x0"),
+                    gas: (block_overrides.gas_limit ),
+                    value: (),
+                    nonce: "",
+                    input: TransactionInput(),
+                    chain_id: "",
+                    blob_versioned_hashes: "" ,
+                    sidecar: ""
+                }
+            }
+        }
+        //if block_overrides
+        // setting the default override values for the 
+        let header_fetch = (HeaderProvider::header_by_number(&self, _block_number.unwrap()));
+            let header = match header_fetch {
+                Ok(header) => header,
+                Err(val) => {
+                    panic!("unable to fetch the header result");
+                }
+            };
+    
+        let mut db_simulate = CacheDB::new(StateProviderDatabase::new(state));
+        // calculating the current timestamp params:
+
+        if block_overrides.time.is_none() {
+            block_overrides.time += 12;
+        }
+        // now processing each of the transactions. 
+        let StateContext{transaction_index, block_number} = state_context.unwrap_or_default();
+
+        // sanitize the block order is increased: 
+        let prev_number: u64 =  header.unwrap().number;
+
+        if (block_number - prev_number) {
+            EthApiError::InvalidParams(String::from("error: Not the correct defined block number time.")).into()
+        }
+        // setting up the headers.
+       if  block_overrides.time == None {
+        block_overrides.time = prev_time + 1
+
+       }
+       else block_overrides.time <= prev_time {
+        EthApiError::InvalidParams(String::from("error: the time block. ")).into()
+       }
+       
+
+
+        }
+    
     }
 
     /// Executes the call request (`eth_call`) and returns the output
@@ -95,7 +160,6 @@ pub trait EthCall: Call + LoadPendingBlock {
                     EthApiError::InvalidParams(String::from("transactions are empty.")).into()
                 )
             }
-
             let StateContext { transaction_index, block_number } =
                 state_context.unwrap_or_default();
             let transaction_index = transaction_index.unwrap_or_default();
